@@ -6,7 +6,12 @@
       <g style="shape-rendering: crispEdges;" transform="translate(0,0)">
         <!-- We can use Vue transitions too! -->
         <transition-group name="list" tag="g" class="depth">
-          <g class="children" v-for="children in selectedNode._children" :key="'c_' + children.id">
+          <g
+            class="children"
+            v-for="children in selectedNode._children"
+            :key="'c_' + children.id"
+            :data-tree-box="children.id"
+          >
             <rect
               class="parent"
               :id="children.id"
@@ -21,42 +26,46 @@
               <title>{{ children.data.name }} | {{ children.value }}</title>
               <text :x="x(children.x0)" :y="y(children.y0)">test</text>
             </rect>
-
-            <text
-              dy="0em"
-              :key="'t_' + children.data.name"
-              :id="'t_' + children.data.name"
-              :x="x(children.x0 + x(children.x1 - children.x0 + children.parent.x0) / 2)"
-              :y="y(children.y0 + y(children.y1 - children.y0 + children.parent.y0) / 2)"
-              dominant-baseline="middle"
-              text-anchor="middle"
-              style="fill-opacity: 1;font-weight: bold;font-size: 1rem"
-              :style="{ 'font-size': rankingFontSize(children.data) }"
+            <g
+              :transform="
+                `translate(${x(
+                  children.x0 + x(children.x1 - children.x0 + children.parent.x0) / 2
+                )},${y(children.y0 + y(children.y1 - children.y0 + children.parent.y0) / 2)})`
+              "
             >
-              {{ children.data.name }}
-              <tspan
-                style="fill-opacity: 1;font-weight: bold;font-size: 0.6rem;fill:red"
-                :style="{ fill: rankingStyle(children.data) }"
+              <text
+                class="text-group-heading"
+                dy="0em"
+                :key="'t_' + children.data.name"
+                :id="'t_' + children.data.name"
+                dominant-baseline="middle"
+                text-anchor="middle"
+                style="fill-opacity: 1;font-weight: bold;font-size: 1rem"
+                :style="{ 'font-size': rankingFontSize(children.data, overBoundBoxMeta[children.id]) }"
               >
-                {{ rankingLabel(children.data) }}
-              </tspan>
-            </text>
-
-            <text
-              dy="1.7em"
-              :key="'t_' + children.id"
-              :x="x(children.x0 + x(children.x1 - children.x0 + children.parent.x0) / 2)"
-              :y="y(children.y0 + y(children.y1 - children.y0 + children.parent.y0) / 2)"
-              dominant-baseline="middle"
-              text-anchor="middle"
-              style="font-size: 0.8rem;fill-opacity: 1;fill:#b7afae"
-            >
-              {{ countLabel(children.value) }}
-            </text>
+                {{ children.data.name }}
+                <tspan
+                  style="fill-opacity: 1;font-weight: bold;font-size: 0.6rem;fill:red"
+                  :style="{ fill: rankingStyle(children.data) }"
+                >
+                  {{ rankingLabel(children.data) }}
+                </tspan>
+              </text>
+              <text
+                dy="1.7em"
+                :key="'t_' + children.id"
+                dominant-baseline="middle"
+                text-anchor="middle"
+                style="font-size: 0.8rem;fill-opacity: 1;fill:#b7afae"
+              >
+                {{ countLabel(children.value) }}
+              </text>
+            </g>
           </g>
         </transition-group>
       </g>
     </svg>
+    {{ overBoundBoxMeta }}
   </div>
 </template>
 
@@ -141,6 +150,8 @@ export default class Treemap extends Vue {
     y1: 0,
     depth: 0
   };
+
+  private overBoundBoxMeta = {}
 
   private margin = {
     top: 20,
@@ -345,9 +356,52 @@ export default class Treemap extends Vue {
 
     this.rootNode.x1 = this.width;
     this.rootNode.y1 = this.height;
-
     this.accumulate(this.rootNode, this);
     this.treemap(this.rootNode);
+    this.overBoundBoxMeta = {}
+
+    // treemap을 모두 그린 위치를 보정하는 메타 생성
+
+    this.$nextTick(()=>{
+      const treeBoxList = Array.from(this.$el.querySelectorAll("[data-tree-box]"));
+      const treeBoxNodeList = treeBoxList.map(entryNode => {
+        return {
+          id:entryNode.getAttribute("data-tree-box"),
+          parent: entryNode.querySelector(".parent"),
+          textHeading: entryNode.querySelector(".text-group-heading")
+        };
+      });
+
+      const eachBoxBounds = treeBoxNodeList.map(({ id, parent, textHeading }) => {
+        const parentWidth = parent.width.baseVal.value
+        const textBounds = textHeading.getBBox()
+        const headingWidth = textBounds.width
+
+        return {
+          id,
+          parentWidth,
+          headingWidth
+        }
+      });
+
+      const overHeadings = eachBoxBounds.map((datum)=>{
+        const { parentWidth, headingWidth } = datum
+        if(headingWidth > parentWidth){
+          return datum
+        } else {
+          return null;
+        }
+      }).filter(Boolean)
+
+      this.overBoundBoxMeta = overHeadings.reduce((dest, { id, parentWidth, headingWidth })=>{
+        dest[id] = {
+          ratio:parentWidth/headingWidth,
+          parentWidth,
+          headingWidth
+        }
+        return dest
+      }, {})
+    });
   }
 
   private accumulate(d: any, context: this) {
@@ -359,20 +413,26 @@ export default class Treemap extends Vue {
     return d.value;
   }
 
-  private rankingFontSize(value: TreeMapData) {
+  private rankingFontSize(value: TreeMapData, overBoundingInfo:any) {
+    let fontSize = 0.7
+
     if (value.rank === 1) {
-      return "1.7rem";
+      fontSize = 1.7;
+    } else if (value.rank < 6) {
+      fontSize = 1.3;
+    } else if (value.rank < 10) {
+      fontSize = 1.1;
+    } else if (value.rank < 15) {
+      fontSize = 0.9;
     }
-    if (value.rank < 6) {
-      return "1.3rem";
+
+    if(overBoundingInfo){
+      const fixSize = (fontSize - 0.2) * overBoundingInfo.ratio
+      console.log("fixSize", fixSize)
+      return `${fixSize}rem`
+    } else {
+      return `${fontSize}rem`
     }
-    if (value.rank < 10) {
-      return "1.1rem";
-    }
-    if (value.rank < 15) {
-      return "0.9rem";
-    }
-    return "0.7rem";
   }
 
   private rankingLabel(data: TreeMapData) {
